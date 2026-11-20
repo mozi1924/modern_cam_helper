@@ -7,7 +7,7 @@ use eframe::egui;
 use elegance::{
     Accent, Badge, BadgeTone, BuiltInTheme, Button, ButtonSize, Callout, CalloutTone, Card,
     CollapsingSection, IndicatorState, SegmentedControl, SegmentedSize, Select, Slider, StatusPill,
-    Switch, Theme, ThemeSwitcher, Toast, Toasts, glyphs,
+    Switch, Theme, Toast, Toasts, glyphs,
 };
 use moderncam_device::DeviceSnapshot;
 use moderncam_protocol::sync::{
@@ -248,15 +248,26 @@ impl eframe::App for ModernCamApp {
 
             let avail = ui.available_size();
             let gap = 14.0;
-            let left_w = ((avail.x - gap) * 0.56).clamp(360.0, 760.0);
+            let left_w = ((avail.x - gap) * 0.56).clamp(380.0, 760.0);
             let right_w = (avail.x - gap - left_w).max(320.0);
+            let connected = self.snapshot.connected;
+            let has_hid = connected && self.snapshot.hid.is_some();
+            let has_uvc = connected && self.snapshot.uvc_state.is_some();
 
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(left_w, avail.y),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        self.render_preview_column(ui, &preview_snap);
+                        egui::ScrollArea::vertical()
+                            .id_salt("left_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                self.render_preview_column(ui, &preview_snap);
+                                ui.add_space(10.0);
+                                self.render_device_info_card(ui, has_hid, has_uvc);
+                                ui.add_space(12.0);
+                            });
                     },
                 );
                 ui.add_space(gap);
@@ -279,7 +290,7 @@ impl ModernCamApp {
         let theme = Theme::current(ui.ctx());
         let bg = theme.palette.bg;
 
-        egui::Panel::top("header")
+        let resp = egui::Panel::top("header")
             .frame(
                 egui::Frame::new()
                     .fill(bg)
@@ -333,7 +344,31 @@ impl ModernCamApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(ThemeSwitcher::new(&mut self.theme).auto_install(true));
+                        // Select internally switches to vertical() (top_down LEFT), so isolate it
+                        // inside a fixed-width left_to_right allocation to anchor it on the right.
+                        let mut theme_changed = false;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(106.0, 26.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                let options =
+                                    BuiltInTheme::all().into_iter().map(|t| (t, t.label()));
+                                if ui
+                                    .add(
+                                        Select::new("header_theme_select", &mut self.theme)
+                                            .options(options)
+                                            .width(106.0)
+                                            .size(ButtonSize::Small),
+                                    )
+                                    .changed()
+                                {
+                                    theme_changed = true;
+                                }
+                            },
+                        );
+                        if theme_changed {
+                            self.theme.theme().install(ui.ctx());
+                        }
                         ui.add_space(8.0);
                         if ui
                             .add(
@@ -349,6 +384,13 @@ impl ModernCamApp {
                     });
                 });
             });
+
+        let header_rect = resp.response.rect;
+        ui.painter().hline(
+            header_rect.x_range(),
+            header_rect.bottom() - 0.5,
+            egui::Stroke::new(1.0, theme.palette.border),
+        );
     }
 
     fn render_replug_callout(&self, ui: &mut egui::Ui) {
@@ -468,10 +510,9 @@ impl ModernCamApp {
 
             ui.add_space(8.0);
 
-            // 16:9 preview viewport
+            // 16:9 preview viewport capped at 420px so Device Info fits cleanly below on launch.
             let canvas_w = ui.available_width();
-            let max_h = (ui.available_height() - 48.0).max(200.0);
-            let canvas_h = (canvas_w * 9.0 / 16.0).min(max_h);
+            let canvas_h = (canvas_w * 9.0 / 16.0).min(420.0);
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
 
@@ -618,9 +659,10 @@ impl ModernCamApp {
         let has_uvc = connected && self.snapshot.uvc_state.is_some();
 
         egui::ScrollArea::vertical()
+            .id_salt("right_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 
                 // 1. Proprietary HID Settings Card
                 Card::new().heading("专属功能 (HID)").show(ui, |ui| {
@@ -846,91 +888,96 @@ impl ModernCamApp {
                         });
                     });
 
-                // 4. Device Information & Maintenance Card
-                Card::new().show(ui, |ui| {
-                    CollapsingSection::new("device_info_section", "设备信息与维护")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            let theme = Theme::current(ui.ctx());
-                            if let Some(hid) = &self.snapshot.hid {
-                                info_row(
-                                    ui,
-                                    &theme,
-                                    "固件版本",
-                                    &hid.firmware
-                                        .map(|f| f.to_string())
-                                        .unwrap_or_else(|| "未知".into()),
-                                );
-                                info_row(
-                                    ui,
-                                    &theme,
-                                    "序列号",
-                                    hid.serial.as_deref().unwrap_or("未知"),
-                                );
-                                info_row(
-                                    ui,
-                                    &theme,
-                                    "外观颜色",
-                                    hid.color_name.as_deref().unwrap_or("未知"),
-                                );
-                            } else {
-                                ui.add(egui::Label::new(
-                                    theme.muted_text("未连接设备或 HID 通道不可用"),
-                                ));
-                            }
-
-                            if let Some(topo) = &self.snapshot.topology {
-                                ui.add_space(6.0);
-                                ui.add(egui::Label::new(theme.muted_text("当前 USB 接口枚举:")));
-                                ui.horizontal_wrapped(|ui| {
-                                    for iface in &topo.interfaces {
-                                        let tone = match iface.class {
-                                            1 => BadgeTone::Ok,
-                                            3 => BadgeTone::Info,
-                                            _ => BadgeTone::Neutral,
-                                        };
-                                        let label = format!(
-                                            "#{} {}",
-                                            iface.number,
-                                            interface_class_name(iface.class)
-                                        );
-                                        ui.add(Badge::new(label, tone).preserve_case());
-                                    }
-                                });
-                            }
-
-                            ui.add_space(10.0);
-                            ui.horizontal_wrapped(|ui| {
-                                if ui
-                                    .add(
-                                        Button::new("重置画质参数 (UVC)")
-                                            .outline()
-                                            .size(ButtonSize::Small)
-                                            .enabled(has_uvc),
-                                    )
-                                    .clicked()
-                                {
-                                    self.worker.reset_uvc_defaults();
-                                }
-
-                                if ui
-                                    .add(
-                                        Button::new("重置固件配置 (HID 0xAE)")
-                                            .accent(Accent::Red)
-                                            .outline()
-                                            .size(ButtonSize::Small)
-                                            .enabled(has_hid),
-                                    )
-                                    .clicked()
-                                {
-                                    self.worker.reset_hid_settings();
-                                }
-                            });
-                        });
-                });
-
                 ui.add_space(12.0);
             });
+    }
+
+    fn render_device_info_card(&self, ui: &mut egui::Ui, has_hid: bool, has_uvc: bool) {
+        Card::new().show(ui, |ui| {
+            CollapsingSection::new("device_info_section", "设备信息与维护")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let theme = Theme::current(ui.ctx());
+                    if let Some(hid) = &self.snapshot.hid {
+                        ui.horizontal_wrapped(|ui| {
+                            info_row(
+                                ui,
+                                &theme,
+                                "固件",
+                                &hid.firmware
+                                    .map(|f| f.to_string())
+                                    .unwrap_or_else(|| "未知".into()),
+                            );
+                            ui.add_space(10.0);
+                            info_row(
+                                ui,
+                                &theme,
+                                "序列号",
+                                hid.serial.as_deref().unwrap_or("未知"),
+                            );
+                            ui.add_space(10.0);
+                            info_row(
+                                ui,
+                                &theme,
+                                "外观",
+                                hid.color_name.as_deref().unwrap_or("未知"),
+                            );
+                        });
+                    } else {
+                        ui.add(egui::Label::new(
+                            theme.muted_text("未连接设备或 HID 通道不可用"),
+                        ));
+                    }
+
+                    if let Some(topo) = &self.snapshot.topology {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(egui::Label::new(theme.muted_text("USB 接口：")));
+                            for iface in &topo.interfaces {
+                                let tone = match iface.class {
+                                    1 => BadgeTone::Ok,
+                                    3 => BadgeTone::Info,
+                                    _ => BadgeTone::Neutral,
+                                };
+                                let label = format!(
+                                    "#{} {}",
+                                    iface.number,
+                                    interface_class_name(iface.class)
+                                );
+                                ui.add(Badge::new(label, tone).preserve_case());
+                            }
+                        });
+                    }
+
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add(
+                                Button::new("重置画质参数 (UVC)")
+                                    .outline()
+                                    .size(ButtonSize::Small)
+                                    .enabled(has_uvc),
+                            )
+                            .clicked()
+                        {
+                            self.worker.reset_uvc_defaults();
+                        }
+
+                        if ui
+                            .add(
+                                Button::new("重置固件配置 (HID 0xAE)")
+                                    .accent(Accent::Red)
+                                    .outline()
+                                    .size(ButtonSize::Small)
+                                    .enabled(has_hid),
+                            )
+                            .clicked()
+                        {
+                            self.worker.reset_hid_settings();
+                        }
+                    });
+                });
+        });
     }
 
     fn render_uvc_slider_row(
@@ -984,7 +1031,7 @@ impl ModernCamApp {
         if ui.add(slider).changed() {
             changed = true;
         }
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         changed
     }
 }

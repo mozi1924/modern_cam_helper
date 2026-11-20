@@ -13,8 +13,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Microsoft Modern Webcam 控制台")
-            .with_inner_size([1140.0, 720.0])
-            .with_min_inner_size([860.0, 560.0]),
+            .with_inner_size([1180.0, 780.0])
+            .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
 
