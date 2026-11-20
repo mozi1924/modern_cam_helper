@@ -1,0 +1,17 @@
+[package]
+name = "moderncam-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+moderncam-protocol.workspace = true
+moderncam-device.workspace = true
+cameras.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-elegance.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+env_logger.workspace = true

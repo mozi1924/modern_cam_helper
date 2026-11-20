@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/moderncam-protocol",
+    "crates/moderncam-device",
+    "crates/moderncam-cli",
+    "crates/moderncam-gui",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+moderncam-protocol = { path = "crates/moderncam-protocol" }
+moderncam-device = { path = "crates/moderncam-device" }
+
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+crossbeam-channel = "0.5"
+futures-lite = "2"
+nusb = "0.2.9"
+hidapi = "2.6.7"
+v4l = "0.14.0"
+cameras = "0.3.2"
+clap = { version = "4.6.9", features = ["derive"] }
+eframe = "0.37.0"
+egui = "0.37.0"
+egui-elegance = "0.21.1"
+
+# Ensure dev-mode RGBA conversion and wgpu/egui rendering stay smooth at 30+ fps.
+[profile.dev.package."*"]
+opt-level = 2

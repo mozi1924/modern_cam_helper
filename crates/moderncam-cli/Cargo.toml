@@ -1,0 +1,12 @@
+[package]
+name = "moderncam-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+moderncam-protocol.workspace = true
+moderncam-device.workspace = true
+clap.workspace = true
+env_logger.workspace = true

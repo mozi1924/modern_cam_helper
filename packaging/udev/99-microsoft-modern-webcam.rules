@@ -1,0 +1,4 @@
+# Grant unprivileged desktop users access to Microsoft Modern Webcam hidraw and V4L2 nodes
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0840", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0840", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0840", MODE="0660", TAG+="uaccess"
