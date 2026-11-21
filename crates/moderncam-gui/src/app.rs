@@ -449,6 +449,7 @@ impl ModernCamApp {
         let theme = Theme::current(ui.ctx());
 
         Card::new().heading("实时画面预览").show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             // Top info & camera selector bar
             ui.horizontal(|ui| {
                 if !preview_snap.cameras.is_empty() {
@@ -531,7 +532,7 @@ impl ModernCamApp {
                         .paint_at(ui, img_rect);
                 }
             } else {
-                // Status overlay when stream is inactive
+                // Status overlay when stream is inactive (uses new_child so parent cursor stays below `rect`)
                 let msg = match &preview_snap.status {
                     PreviewStatus::Initializing => "正在打开摄像头预览并检查系统权限…",
                     PreviewStatus::WaitingReplug => "设备已断开，等待重新插入后自动恢复预览…",
@@ -542,34 +543,38 @@ impl ModernCamApp {
                     PreviewStatus::Error(e) => e.as_str(),
                     _ => "",
                 };
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(20.0)), |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.add(egui::Label::new(
-                                egui::RichText::new(msg)
-                                    .color(theme.palette.text_muted)
-                                    .size(14.0),
-                            ));
-                            if matches!(
-                                preview_snap.status,
-                                PreviewStatus::PermissionDenied
-                                    | PreviewStatus::NoCameraFound
-                                    | PreviewStatus::Error(_)
-                            ) {
-                                ui.add_space(10.0);
-                                if ui
-                                    .add(
-                                        Button::icon_text(glyphs::REFRESH, "重试预览")
-                                            .accent(Accent::Blue),
-                                    )
-                                    .clicked()
-                                {
-                                    self.preview.start_or_refresh();
-                                }
-                            }
-                        });
-                    });
-                });
+                let show_retry = matches!(
+                    preview_snap.status,
+                    PreviewStatus::PermissionDenied
+                        | PreviewStatus::NoCameraFound
+                        | PreviewStatus::Error(_)
+                );
+                let inner = rect.shrink(20.0);
+                let line_count = msg.lines().count().max(1) as f32;
+                let est_h = line_count * 20.0 + if show_retry { 42.0 } else { 0.0 };
+                let mut overlay_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                );
+                overlay_ui.add_space(((inner.height() - est_h) * 0.5).max(0.0));
+                overlay_ui.add(egui::Label::new(
+                    egui::RichText::new(msg)
+                        .color(theme.palette.text_muted)
+                        .size(14.0),
+                ));
+                if show_retry {
+                    overlay_ui.add_space(10.0);
+                    if overlay_ui
+                        .add(
+                            Button::icon_text(glyphs::REFRESH, "重试预览")
+                                .accent(Accent::Blue),
+                        )
+                        .clicked()
+                    {
+                        self.preview.start_or_refresh();
+                    }
+                }
             }
 
             // Physical privacy shutter overlay warning
@@ -666,6 +671,7 @@ impl ModernCamApp {
 
                 // 1. Proprietary HID Settings Card
                 Card::new().heading("专属功能 (HID)").show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     if ui
                         .add(Switch::new(&mut self.controls.hdr, "HDR 高动态范围").enabled(has_hid))
                         .changed()
@@ -709,6 +715,7 @@ impl ModernCamApp {
                 // 2. Basic UVC Image Settings Card
                 let caps = self.snapshot.uvc_caps.clone().unwrap_or_default();
                 Card::new().heading("基础画质 (UVC)").show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.add_enabled_ui(has_uvc, |ui| {
                         if let Some(r) = caps.brightness {
                             let mut val = self.controls.brightness;
@@ -750,11 +757,15 @@ impl ModernCamApp {
                             && caps.contrast.is_none()
                             && caps.saturation.is_none()
                             && caps.sharpness.is_none()
+                            && caps.zoom.is_none()
                         {
                             let theme = Theme::current(ui.ctx());
-                            ui.add(egui::Label::new(
-                                theme.muted_text("未检测到可用 UVC 画质控制"),
-                            ));
+                            let msg = if connected {
+                                "未检测到可用 UVC 画质控制"
+                            } else {
+                                "设备未连接，重新插入后可调节基础画质"
+                            };
+                            ui.add(egui::Label::new(theme.muted_text(msg)));
                         }
                     });
                 });
@@ -763,129 +774,147 @@ impl ModernCamApp {
                 Card::new()
                     .heading("白平衡、曝光与防闪烁 (UVC)")
                     .show(ui, |ui| {
-                        ui.add_enabled_ui(has_uvc, |ui| {
-                            if caps.white_balance_auto
-                                && ui
-                                    .add(Switch::new(&mut self.controls.wb_auto, "自动白平衡"))
-                                    .changed()
-                            {
-                                self.send_uvc(UvcControlUpdate::WhiteBalanceAuto(
-                                    self.controls.wb_auto,
-                                ));
-                            }
+                        ui.set_min_width(ui.available_width());
+                        let has_wb = caps.white_balance_auto || caps.white_balance_temp.is_some();
+                        let has_ae = caps.auto_exposure || caps.exposure_time.is_some();
+                        let has_plf = caps.power_line_freq.is_some();
 
-                            if let Some(r) = caps.white_balance_temp {
-                                let manual_wb =
-                                    has_uvc && (!caps.white_balance_auto || !self.controls.wb_auto);
-                                ui.add_enabled_ui(manual_wb, |ui| {
-                                    let mut val = self.controls.wb_temp;
-                                    if self
-                                        .render_uvc_slider_row(ui, "色温", &mut val, r, " K", None)
-                                    {
-                                        self.controls.wb_temp = val;
-                                        self.send_uvc(UvcControlUpdate::WhiteBalanceTemp(val));
-                                    }
+                        if !has_wb && !has_ae && !has_plf {
+                            let theme = Theme::current(ui.ctx());
+                            let msg = if connected {
+                                "未检测到可用白平衡、曝光或防闪烁控制"
+                            } else {
+                                "设备未连接，重新插入后可调节白平衡、曝光与防闪烁"
+                            };
+                            ui.add(egui::Label::new(theme.muted_text(msg)));
+                        } else {
+                            ui.add_enabled_ui(has_uvc, |ui| {
+                                if caps.white_balance_auto
+                                    && ui
+                                        .add(Switch::new(&mut self.controls.wb_auto, "自动白平衡"))
+                                        .changed()
+                                {
+                                    self.send_uvc(UvcControlUpdate::WhiteBalanceAuto(
+                                        self.controls.wb_auto,
+                                    ));
+                                }
 
-                                    ui.horizontal_wrapped(|ui| {
-                                        for (label, kelvin) in [
-                                            ("暖光 3200K", 3200),
-                                            ("自然 4500K", 4500),
-                                            ("日光 5500K", 5500),
-                                            ("冷白 6500K", 6500),
-                                        ] {
-                                            if ui
-                                                .add(
-                                                    Button::new(label)
-                                                        .outline()
-                                                        .size(ButtonSize::Small),
-                                                )
-                                                .clicked()
-                                            {
-                                                let clamped = r.clamp_snap(kelvin);
-                                                self.controls.wb_auto = false;
-                                                self.controls.wb_temp = clamped;
-                                                self.send_uvc(UvcControlUpdate::WhiteBalanceTemp(
-                                                    clamped,
-                                                ));
+                                if let Some(r) = caps.white_balance_temp {
+                                    let manual_wb = has_uvc
+                                        && (!caps.white_balance_auto || !self.controls.wb_auto);
+                                    ui.add_enabled_ui(manual_wb, |ui| {
+                                        let mut val = self.controls.wb_temp;
+                                        if self.render_uvc_slider_row(
+                                            ui, "色温", &mut val, r, " K", None,
+                                        ) {
+                                            self.controls.wb_temp = val;
+                                            self.send_uvc(UvcControlUpdate::WhiteBalanceTemp(val));
+                                        }
+
+                                        ui.horizontal_wrapped(|ui| {
+                                            for (label, kelvin) in [
+                                                ("暖光 3200K", 3200),
+                                                ("自然 4500K", 4500),
+                                                ("日光 5500K", 5500),
+                                                ("冷白 6500K", 6500),
+                                            ] {
+                                                if ui
+                                                    .add(
+                                                        Button::new(label)
+                                                            .outline()
+                                                            .size(ButtonSize::Small),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    let clamped = r.clamp_snap(kelvin);
+                                                    self.controls.wb_auto = false;
+                                                    self.controls.wb_temp = clamped;
+                                                    self.send_uvc(
+                                                        UvcControlUpdate::WhiteBalanceTemp(clamped),
+                                                    );
+                                                }
                                             }
+                                        });
+                                    });
+                                }
+
+                                if has_wb && has_ae {
+                                    ui.add_space(6.0);
+                                }
+                                if caps.auto_exposure
+                                    && ui
+                                        .add(Switch::new(&mut self.controls.ae_auto, "自动曝光"))
+                                        .changed()
+                                {
+                                    self.send_uvc(UvcControlUpdate::AutoExposure(
+                                        self.controls.ae_auto,
+                                    ));
+                                }
+
+                                if let Some(r) = caps.exposure_time {
+                                    let manual_ae =
+                                        has_uvc && (!caps.auto_exposure || !self.controls.ae_auto);
+                                    ui.add_enabled_ui(manual_ae, |ui| {
+                                        let mut val = self.controls.exposure_time;
+                                        let fmt_ms: fn(f64) -> String =
+                                            |v| format!("{:.1} ms", v / 10.0);
+                                        if self.render_uvc_slider_row(
+                                            ui,
+                                            "曝光时间",
+                                            &mut val,
+                                            r,
+                                            "",
+                                            Some(fmt_ms),
+                                        ) {
+                                            self.controls.exposure_time = val;
+                                            self.send_uvc(UvcControlUpdate::ExposureTime(val));
                                         }
                                     });
-                                });
-                            }
+                                }
 
-                            ui.add_space(6.0);
-                            if caps.auto_exposure
-                                && ui
-                                    .add(Switch::new(&mut self.controls.ae_auto, "自动曝光"))
-                                    .changed()
-                            {
-                                self.send_uvc(UvcControlUpdate::AutoExposure(
-                                    self.controls.ae_auto,
-                                ));
-                            }
-
-                            if let Some(r) = caps.exposure_time {
-                                let manual_ae =
-                                    has_uvc && (!caps.auto_exposure || !self.controls.ae_auto);
-                                ui.add_enabled_ui(manual_ae, |ui| {
-                                    let mut val = self.controls.exposure_time;
-                                    let fmt_ms: fn(f64) -> String =
-                                        |v| format!("{:.1} ms", v / 10.0);
-                                    if self.render_uvc_slider_row(
-                                        ui,
-                                        "曝光时间",
-                                        &mut val,
-                                        r,
-                                        "",
-                                        Some(fmt_ms),
-                                    ) {
-                                        self.controls.exposure_time = val;
-                                        self.send_uvc(UvcControlUpdate::ExposureTime(val));
+                                if let Some(plf_cap) = caps.power_line_freq {
+                                    ui.add_space(6.0);
+                                    let theme = Theme::current(ui.ctx());
+                                    ui.add(egui::Label::new(theme.muted_text("防闪烁 (抗频闪)")));
+                                    let mut options: Vec<(PowerLineFreq, &'static str)> =
+                                        Vec::new();
+                                    if plf_cap.auto {
+                                        options.push((PowerLineFreq::Auto, "自动"));
                                     }
-                                });
-                            }
-
-                            if let Some(plf_cap) = caps.power_line_freq {
-                                ui.add_space(6.0);
-                                let theme = Theme::current(ui.ctx());
-                                ui.add(egui::Label::new(theme.muted_text("防闪烁 (抗频闪)")));
-                                let mut options: Vec<(PowerLineFreq, &'static str)> = Vec::new();
-                                if plf_cap.auto {
-                                    options.push((PowerLineFreq::Auto, "自动"));
-                                }
-                                if plf_cap.hz50 {
-                                    options.push((PowerLineFreq::Hz50, "50 Hz"));
-                                }
-                                if plf_cap.hz60 {
-                                    options.push((PowerLineFreq::Hz60, "60 Hz"));
-                                }
-                                if plf_cap.disabled {
-                                    options.push((PowerLineFreq::Disabled, "关闭"));
-                                }
-                                if !options.is_empty() {
-                                    let mut idx = options
-                                        .iter()
-                                        .position(|(f, _)| *f == self.controls.flicker)
-                                        .unwrap_or(0);
-                                    let labels: Vec<&str> =
-                                        options.iter().map(|(_, l)| *l).collect();
-                                    if ui
-                                        .add(
-                                            SegmentedControl::new(&mut idx, labels)
-                                                .id_salt("flicker_seg")
-                                                .size(SegmentedSize::Small)
-                                                .fill()
-                                                .accent(Accent::Blue),
-                                        )
-                                        .changed()
-                                    {
-                                        let chosen = options[idx].0;
-                                        self.controls.flicker = chosen;
-                                        self.send_uvc(UvcControlUpdate::PowerLineFreq(chosen));
+                                    if plf_cap.hz50 {
+                                        options.push((PowerLineFreq::Hz50, "50 Hz"));
+                                    }
+                                    if plf_cap.hz60 {
+                                        options.push((PowerLineFreq::Hz60, "60 Hz"));
+                                    }
+                                    if plf_cap.disabled {
+                                        options.push((PowerLineFreq::Disabled, "关闭"));
+                                    }
+                                    if !options.is_empty() {
+                                        let mut idx = options
+                                            .iter()
+                                            .position(|(f, _)| *f == self.controls.flicker)
+                                            .unwrap_or(0);
+                                        let labels: Vec<&str> =
+                                            options.iter().map(|(_, l)| *l).collect();
+                                        if ui
+                                            .add(
+                                                SegmentedControl::new(&mut idx, labels)
+                                                    .id_salt("flicker_seg")
+                                                    .size(SegmentedSize::Small)
+                                                    .fill()
+                                                    .accent(Accent::Blue),
+                                            )
+                                            .changed()
+                                        {
+                                            let chosen = options[idx].0;
+                                            self.controls.flicker = chosen;
+                                            self.send_uvc(UvcControlUpdate::PowerLineFreq(chosen));
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
                     });
 
                 ui.add_space(12.0);
@@ -894,6 +923,7 @@ impl ModernCamApp {
 
     fn render_device_info_card(&self, ui: &mut egui::Ui, has_hid: bool, has_uvc: bool) {
         Card::new().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             CollapsingSection::new("device_info_section", "设备信息与维护")
                 .default_open(true)
                 .show(ui, |ui| {
